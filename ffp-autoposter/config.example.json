@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "app_id": "PASTE_APP_ID",
+    "app_secret": "PASTE_APP_SECRET",
+    "system_user_token": "PASTE_NEVER_EXPIRING_SYSTEM_USER_TOKEN",
+    "page_id": "PASTE_FACEBOOK_PAGE_ID",
+    "ig_business_account_id": "PASTE_INSTAGRAM_BUSINESS_ACCOUNT_ID"
+  },
+  "pinterest": {
+    "access_token": "PENDING_TRIAL_APPROVAL",
+    "board_id": ""
+  },
+  "tiktok": {
+    "access_token": "PENDING_AUDIT",
+    "open_id": ""
+  },
+  "gemini": {
+    "api_key": "PASTE_GEMINI_API_KEY_FROM_AISTUDIO"
+  },
+  "image_host": {
+    "note": "IG/Pinterest APIs require images at a public URL. Free option: GitHub repo raw URLs or Cloudflare R2 free tier.",
+    "method": "github",
+    "github_repo": "",
+    "github_token": ""
+  }
+}
