@@ -1,0 +1,36 @@
+name: Daily Poster
+
+on:
+  schedule:
+    - cron: "0 15 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r ffp-autoposter/requirements.txt
+      - name: Build config.json from secrets
+        run: |
+          cat > ffp-autoposter/config.json << EOF
+          {
+            "meta": {
+              "app_id": "${{ secrets.META_APP_ID }}",
+              "app_secret": "${{ secrets.META_APP_SECRET }}",
+              "system_user_token": "${{ secrets.META_SYSTEM_USER_TOKEN }}",
+              "page_id": "${{ secrets.META_PAGE_ID }}",
+              "ig_business_account_id": "${{ secrets.META_IG_ID }}"
+            },
+            "pinterest": { "access_token": "PENDING_TRIAL_APPROVAL", "board_id": "" },
+            "tiktok": { "access_token": "PENDING_AUDIT", "open_id": "" },
+            "gemini": { "api_key": "${{ secrets.GEMINI_API_KEY }}" }
+          }
+          EOF
+      - name: Run poster
+        run: |
+          cd ffp-autoposter
+          python3 poster.py --image-url "${{ github.event.inputs.image_url || 'https://placehold.co/1080x1080' }}" --caption "${{ github.event.inputs.caption || 'Test post from Final Frame Prints automation.' }}"
