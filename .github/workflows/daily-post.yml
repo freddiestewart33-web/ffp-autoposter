@@ -3,7 +3,16 @@ name: Daily Poster
 on:
   schedule:
     - cron: "0 15 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      image_urls:
+        description: "Comma-separated image URLs (2+ = carousel/album/slideshow)"
+        required: false
+        default: ""
+      caption:
+        description: "Caption text"
+        required: false
+        default: ""
 
 jobs:
   post:
@@ -31,6 +40,9 @@ jobs:
           }
           EOF
       - name: Run poster
+        env:
+          IMAGE_URLS: ${{ github.event.inputs.image_urls || 'https://placehold.co/1080x1080' }}
+          CAPTION: ${{ github.event.inputs.caption || 'Test post from Final Frame Prints automation.' }}
         run: |
           cd ffp-autoposter
-          python3 poster.py --image-url "${{ github.event.inputs.image_url || 'https://placehold.co/1080x1080' }}" --caption "${{ github.event.inputs.caption || 'Test post from Final Frame Prints automation.' }}"
+          python3 poster.py --image-urls "$IMAGE_URLS" --caption "$CAPTION"
