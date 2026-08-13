@@ -1,28 +1,33 @@
 name: Daily Poster
 
 on:
-  schedule:
-    - cron: "0 15 * * *"
   workflow_dispatch:
     inputs:
       image_urls:
-        description: "Comma-separated image URLs (2+ = carousel/album/slideshow)"
+        description: "Comma-separated image URLs (2+ = carousel)"
         required: false
         default: ""
       caption:
-        description: "Caption text"
+        description: "Leave EMPTY to let the AI write it. Fill in to override."
+        required: false
+        default: ""
+      product:
+        description: "Product name for context, e.g. 'Scarface framed print'"
         required: false
         default: ""
 
 jobs:
   post:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: pip install -r ffp-autoposter/requirements.txt
+
       - name: Build config.json from secrets
         run: |
           cat > ffp-autoposter/config.json << EOF
@@ -34,15 +39,54 @@ jobs:
               "page_id": "${{ secrets.META_PAGE_ID }}",
               "ig_business_account_id": "${{ secrets.META_IG_ID }}"
             },
+            "brand": {
+              "shop_url": "https://finalframeprints.com",
+              "handle": "@finalframeprints101"
+            },
+            "research": { "competitors": [] },
             "pinterest": { "access_token": "PENDING_TRIAL_APPROVAL", "board_id": "" },
             "tiktok": { "access_token": "PENDING_AUDIT", "open_id": "" },
-            "gemini": { "api_key": "${{ secrets.GEMINI_API_KEY }}" }
+            "gemini": {
+              "api_key": "${{ secrets.GEMINI_API_KEY }}",
+              "model": "gemini-flash-latest"
+            }
           }
           EOF
-      - name: Run poster
+
+      - name: Generate caption + hashtags
         env:
-          IMAGE_URLS: ${{ github.event.inputs.image_urls || 'https://placehold.co/1080x1080' }}
-          CAPTION: ${{ github.event.inputs.caption || 'Test post from Final Frame Prints automation.' }}
+          IMAGE_URLS: ${{ github.event.inputs.image_urls }}
+          MANUAL_CAPTION: ${{ github.event.inputs.caption }}
+          PRODUCT: ${{ github.event.inputs.product }}
         run: |
           cd ffp-autoposter
-          python3 poster.py --image-urls "$IMAGE_URLS" --caption "$CAPTION"
+          if [ -n "$MANUAL_CAPTION" ]; then
+            echo "Using manual caption override."
+            printf '%s' "$MANUAL_CAPTION" > caption.txt
+          else
+            python3 captioner.py --image-urls "$IMAGE_URLS" \
+              ${PRODUCT:+--product "$PRODUCT"} > caption_result.json
+            python3 -c "import json;print(json.load(open('caption_result.json'))['caption'])" > caption.txt
+            echo "--- Generated ---"
+            cat caption.txt
+          fi
+
+      - name: Post to platforms
+        env:
+          IMAGE_URLS: ${{ github.event.inputs.image_urls }}
+        run: |
+          cd ffp-autoposter
+          python3 poster.py --image-urls "$IMAGE_URLS" --caption "$(cat caption.txt)"
+
+      - name: Save learned data back to repo
+        run: |
+          cd ffp-autoposter
+          rm -f config.json caption.txt caption_result.json
+          cd ..
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "ffp-bot"
+            git config user.email "bot@users.noreply.github.com"
+            git add -A
+            git commit -m "bot: update research data" || true
+            git push || true
+          fi
