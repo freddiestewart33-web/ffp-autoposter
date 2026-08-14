@@ -1,20 +1,27 @@
 name: Daily Poster
 
 on:
+  schedule:
+    # 18:00 UTC daily — good evening slot for UK audience.
+    - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
-      image_urls:
-        description: "Comma-separated image URLs (2+ = carousel)"
+      handle:
+        description: "Force a specific product (Shopify handle). Blank = next in rotation."
         required: false
         default: ""
-      caption:
-        description: "Leave EMPTY to let the AI write it. Fill in to override."
+      dry_run:
+        description: "Set to 'true' to generate everything but NOT publish"
         required: false
-        default: ""
-      product:
-        description: "Product name for context, e.g. 'Scarface framed print'"
+        default: "false"
+      platforms:
+        description: "Platforms to post to"
         required: false
-        default: ""
+        default: "instagram,facebook,pinterest,tiktok"
+
+concurrency:
+  group: daily-poster
+  cancel-in-progress: false
 
 jobs:
   post:
@@ -30,7 +37,7 @@ jobs:
 
       - name: Build config.json from secrets
         run: |
-          cat > ffp-autoposter/config.json << EOF
+          cat > ffp-autoposter/config.json << 'EOF'
           {
             "meta": {
               "app_id": "${{ secrets.META_APP_ID }}",
@@ -53,40 +60,32 @@ jobs:
           }
           EOF
 
-      - name: Generate caption + hashtags
+      - name: Run daily post
         env:
-          IMAGE_URLS: ${{ github.event.inputs.image_urls }}
-          MANUAL_CAPTION: ${{ github.event.inputs.caption }}
-          PRODUCT: ${{ github.event.inputs.product }}
+          HANDLE: ${{ github.event.inputs.handle }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          PLATFORMS: ${{ github.event.inputs.platforms }}
         run: |
           cd ffp-autoposter
-          if [ -n "$MANUAL_CAPTION" ]; then
-            echo "Using manual caption override."
-            printf '%s' "$MANUAL_CAPTION" > caption.txt
-          else
-            python3 captioner.py --image-urls "$IMAGE_URLS" \
-              ${PRODUCT:+--product "$PRODUCT"} > caption_result.json
-            python3 -c "import json;print(json.load(open('caption_result.json'))['caption'])" > caption.txt
-            echo "--- Generated ---"
-            cat caption.txt
-          fi
-
-      - name: Post to platforms
-        env:
-          IMAGE_URLS: ${{ github.event.inputs.image_urls }}
-        run: |
-          cd ffp-autoposter
-          python3 poster.py --image-urls "$IMAGE_URLS" --caption "$(cat caption.txt)"
+          ARGS=""
+          [ -n "$HANDLE" ] && ARGS="$ARGS --handle $HANDLE"
+          [ "$DRY_RUN" = "true" ] && ARGS="$ARGS --dry-run"
+          [ -n "$PLATFORMS" ] && ARGS="$ARGS --platforms $PLATFORMS"
+          python3 run_daily.py $ARGS
 
       - name: Save learned data back to repo
+        if: always()
         run: |
           cd ffp-autoposter
-          rm -f config.json caption.txt caption_result.json
+          rm -f config.json
+          rm -rf __pycache__
           cd ..
           if [ -n "$(git status --porcelain)" ]; then
             git config user.name "ffp-bot"
             git config user.email "bot@users.noreply.github.com"
-            git add -A
-            git commit -m "bot: update research data" || true
+            git add ffp-autoposter/hashtag_library.json \
+                    ffp-autoposter/post_log.jsonl \
+                    ffp-autoposter/swipe_brief.json 2>/dev/null || true
+            git commit -m "bot: post log + research data" || true
             git push || true
           fi
