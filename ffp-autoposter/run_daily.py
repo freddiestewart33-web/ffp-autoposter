@@ -1,19 +1,5 @@
-#!/usr/bin/env python3
-"""Daily orchestrator — the whole pipeline in one run.
-
-  1. Pull the live Shopify catalogue
-  2. Pick the product that's gone longest without being posted
-  3. Write a caption from the REAL product data (title, character, collection,
-     official description, price, product URL) — no guessing from the image
-  4. Post its mockup images as a carousel to every connected platform
-  5. Log what happened, including which product, so rotation works next time
-
-Usage:
-  python3 run_daily.py                     # full auto: pick, write, post
-  python3 run_daily.py --dry-run           # do everything except publish
-  python3 run_daily.py --handle creed-poster   # force a specific product
-  python3 run_daily.py --max-images 3      # cap carousel size (default 3)
-"""
+#!/usr/bin/env python#!/usr/bin/env python3
+"""Daily orchestrator — the whole pipeline in one run."""
 import argparse
 import json
 import sys
@@ -35,11 +21,13 @@ def main():
                     help="Force a specific product by its Shopify handle")
     ap.add_argument("--max-images", type=int, default=3)
     ap.add_argument("--platforms", default="instagram,facebook,pinterest,tiktok")
+    ap.add_argument("--no-tag", action="store_true",
+                    help="Skip Instagram Shop product tagging")
     args = ap.parse_args()
 
     cfg = captioner.load_config()
 
-    # 1-2. Catalogue and selection ------------------------------------------
+    # 1-2. Catalogue and selection
     products = catalogue.fetch_catalogue(cfg)
     if not products:
         sys.exit("No products found in catalogue — is the shop URL correct?")
@@ -56,7 +44,7 @@ def main():
     print(f"[info] posting: {product['title']} ({len(image_urls)} images)")
     print(f"[info] product page: {product['url']}")
 
-    # 3. Caption ------------------------------------------------------------
+    # 3. Caption
     product_brief = catalogue.as_product_brief(product)
     result = captioner.build(cfg, image_urls, product=product_brief)
     caption = result["caption"]
@@ -68,21 +56,37 @@ def main():
           f"{len(result.get('hashtags', []))} hashtags, "
           f"{result.get('brief_posts_analysed', 0)} posts analysed")
 
-    # 4. Publish ------------------------------------------------------------
+    # 4. Instagram Shop product tag
+    product_tags = None
+    if not args.no_tag:
+        try:
+            import shoptags
+            pid = shoptags.find_product_id(cfg, product["title"])
+            product_tags = shoptags.tags_payload(pid)
+            if product_tags:
+                print(f"[info] tagging Instagram Shop product {pid}")
+        except Exception as e:
+            print(f"[warn] product tagging unavailable: {e}", file=sys.stderr)
+
+    # 5. Publish
     results = []
     for name in [p.strip() for p in args.platforms.split(",")]:
         fn = poster.PLATFORMS.get(name)
         if not fn:
             continue
         try:
-            results.append(fn(cfg, image_urls, caption, args.dry_run))
-        except Exception as e:  # noqa: BLE001
+            if name == "instagram":
+                results.append(fn(cfg, image_urls, caption, args.dry_run,
+                                  product_tags=product_tags))
+            else:
+                results.append(fn(cfg, image_urls, caption, args.dry_run))
+        except Exception as e:
             results.append((name, "error", str(e)))
 
     for platform, status, detail in results:
         print(f"{platform:10s} {status:12s} {detail}")
 
-    # 5. Log ----------------------------------------------------------------
+    # 6. Log
     posted_ok = any(s.startswith("posted") for _, s, _ in results)
     if posted_ok and not args.dry_run:
         with POST_LOG.open("a") as f:
@@ -91,6 +95,7 @@ def main():
                 "product_handle": product["handle"],
                 "product_title": product["title"],
                 "product_url": product["url"],
+                "product_tagged": bool(product_tags),
                 "images": image_urls,
                 "caption": caption,
                 "hashtags": result.get("hashtags", []),
@@ -107,4 +112,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()3
+
