@@ -75,6 +75,9 @@ def search_products(cfg, catalog_id, query=""):
     try:
         r = requests.get(f"{GRAPH}/{ig_id}/catalog_product_search", params={
             "catalog_id": catalog_id, "q": query,
+            # Meta returns the title under `product_name`; ask for it explicitly
+            # or the response comes back with IDs only.
+            "fields": "product_id,product_name,retailer_id,review_status,image_url",
             "access_token": token}, timeout=45)
         if r.status_code != 200:
             print(f"[warn] product_search {r.status_code}: {r.text[:200]}",
@@ -103,7 +106,8 @@ def find_product_id(cfg, product_title):
     for q in queries:
         for item in search_products(cfg, catalog_id, q):
             pid = item.get("product_id") or item.get("id")
-            name = item.get("name") or item.get("title") or ""
+            name = (item.get("product_name") or item.get("name")
+                    or item.get("title") or item.get("retailer_id") or "")
             if pid:
                 seen[pid] = name
 
@@ -177,7 +181,8 @@ def main():
     print(f"{len(items)} catalogue products"
           f"{f' matching {query!r}' if query else ''}:\n")
     for i in items:
-        print(f"  {i.get('product_id') or i.get('id')}  {i.get('name') or i.get('title')}")
+        print(f"  {i.get('product_id') or i.get('id')}  "
+              f"{i.get('product_name') or i.get('name') or i.get('retailer_id')}")
     if query:
         print(f"\nBest match → {find_product_id(cfg, query)}")
 
