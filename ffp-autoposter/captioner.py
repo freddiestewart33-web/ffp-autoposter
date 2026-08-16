@@ -369,9 +369,63 @@ Rules:
 
 # --------------------------------------------------------------------------
 
+def product_hashtags(cfg, product):
+    """Hashtags derived from THIS product. No web search needed, so it works
+    even when grounded calls are rate-limited."""
+    if not product:
+        return []
+    prompt = f"""Here is the product being posted:
+
+{product}
+
+Generate Instagram hashtags for THIS SPECIFIC product. Rules:
+- Must be relevant to this exact film/character/collection — never tag a
+  different film's characters.
+- Mix: 3-4 broad wall-art/decor tags, 6-8 mid-size niche tags where a small
+  account can actually rank, 3-4 very specific long-tail tags for this film.
+- All lowercase, no # symbol, no spaces.
+
+Return ONLY a JSON array of 15 strings. No explanation."""
+    try:
+        raw = gemini(cfg, [{"text": prompt}], use_search=False, temperature=0.7)
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] product hashtags failed: {e}", file=sys.stderr)
+        return []
+    m = re.search(r"\[.*\]", raw, re.S)
+    if not m:
+        return []
+    try:
+        tags = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return []
+    return [str(t).lstrip("#").strip().lower().replace(" ", "")
+            for t in tags if str(t).strip()]
+
+
+def relevant_to(tag, product_text):
+    """Reject tags naming a film/character that isn't in this product."""
+    others = {
+        "creed": ["creed", "adonis", "rocky", "balboa", "michaelbjordan",
+                  "michealbjordan", "mbj"],
+        "scarface": ["scarface", "tony", "montana", "pacino"],
+        "snowfall": ["snowfall", "franklin", "saint", "snowfallfx", "damsonidris"],
+    }
+    p = (product_text or "").lower()
+    for film, words in others.items():
+        if film in p:
+            continue  # this IS the product's film, fine
+        if any(w in tag for w in words):
+            return False
+    return True
+
+
 def build(cfg, image_urls, product=None):
     lib = load_library()
 
+    # Primary source: hashtags about the product actually being posted.
+    product_tags_list = product_hashtags(cfg, product)
+
+    # Secondary: live trend research (often blocked on free tier — optional).
     try:
         trending = research_trending_hashtags(cfg)
     except Exception as e:  # noqa: BLE001
@@ -379,13 +433,14 @@ def build(cfg, image_urls, product=None):
         trending = (lib.get("trend_cache") or {}).get("tags", [])
     lib = validate_hashtags(cfg, trending, lib)
 
+    # Tertiary: tags that performed on your own account — but only generic ones,
+    # never another film's character tags.
     perf = own_performance(cfg)
-    proven = winning_tags(perf)
+    proven = [t for t in winning_tags(perf) if relevant_to(t, product)]
 
-    # Rank: proven-on-your-account first, then validated trending, then the rest.
     ordered, seen = [], set()
-    for t in proven + trending:
-        if t in seen:
+    for t in product_tags_list + trending + proven:
+        if t in seen or not relevant_to(t, product):
             continue
         seen.add(t)
         info = lib["tags"].get(t)
@@ -394,6 +449,9 @@ def build(cfg, image_urls, product=None):
         ordered.append(t)
 
     hashtags = ordered[:HASHTAG_COUNT]
+    print(f"[info] hashtags: {len(product_tags_list)} from product, "
+          f"{len(trending)} trending, {len(proven)} proven → {len(hashtags)} used",
+          file=sys.stderr)
 
     # Research brief: what copy is actually converting in this niche today.
     brief, brief_block = {}, ""
