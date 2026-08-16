@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
-"""Instagram Shopping product tagging."""
+"""Instagram Shopping product tagging.
+
+Matches the Shopify product being posted to the equivalent item in your
+Instagram Shop catalogue, so the post becomes shoppable — viewers tap the image
+and go straight to the product.
+
+Flow:
+  1. /{ig-user-id}/available_catalogs      → which catalogue is connected
+  2. /{ig-user-id}/catalog_product_search  → find the product ID by name
+  3. product_tags on the media container   → attach it to the post
+
+Everything degrades gracefully: if the catalogue isn't connected, the product
+can't be matched, or the permission is missing, posting continues untagged
+rather than failing.
+
+Usage (diagnostic):
+  python3 shoptags.py                 # show catalogue + all matchable products
+  python3 shoptags.py "Nothing to lose"
+"""
 import json
 import re
 import sys
@@ -9,8 +27,10 @@ import requests
 
 HERE = Path(__file__).parent
 CONFIG_PATH = HERE / "config.json"
+CACHE_PATH = HERE / "shop_catalog_cache.json"
 GRAPH = "https://graph.facebook.com/v21.0"
 
+# Words that add noise when matching a Shopify title to a catalogue item
 QUOTE_CHARS = "\"“”'‘’"
 NOISE = re.compile(r"[" + QUOTE_CHARS + r"]|\b(poster|print|framed|wall art|the)\b",
                    re.I)
@@ -44,7 +64,7 @@ def get_catalog_id(cfg):
         print(f"[info] catalogue: {cat.get('name')} ({cat.get('catalog_id')})",
               file=sys.stderr)
         return cat.get("catalog_id")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[warn] catalogue lookup failed: {e}", file=sys.stderr)
         return None
 
@@ -61,7 +81,7 @@ def search_products(cfg, catalog_id, query=""):
                   file=sys.stderr)
             return []
         return r.json().get("data", [])
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[warn] product search failed: {e}", file=sys.stderr)
         return []
 
@@ -74,6 +94,7 @@ def find_product_id(cfg, product_title):
 
     target = normalise(product_title)
 
+    # Try the distinctive part of the title first (the quote in quotation marks)
     quoted = re.findall(r"[" + QUOTE_CHARS + r"]([^" + QUOTE_CHARS + r"]{4,})["
                         + QUOTE_CHARS + r"]", product_title or "")
     queries = [q.strip() for q in quoted] + [product_title, ""]
@@ -86,6 +107,7 @@ def find_product_id(cfg, product_title):
             if pid:
                 seen[pid] = name
 
+        # exact-ish match on this pass?
         for pid, name in seen.items():
             if normalise(name) == target:
                 print(f"[info] exact catalogue match: {name} ({pid})", file=sys.stderr)
@@ -96,6 +118,31 @@ def find_product_id(cfg, product_title):
               file=sys.stderr)
         return None
 
+    # Show what the catalogue actually contains — essential for debugging
+    print(f"[info] catalogue returned {len(seen)} candidate(s):", file=sys.stderr)
+    for pid, name in list(seen.items())[:15]:
+        print(f"         {pid}  {name!r}", file=sys.stderr)
+
+    # Substring match either direction (handles "Scarface Poster — All I Have…")
+    for pid, name in seen.items():
+        n = normalise(name)
+        if not n:
+            continue
+        if n in target or target in n:
+            print(f"[info] substring catalogue match: {name} ({pid})",
+                  file=sys.stderr)
+            return pid
+
+    # Match on the quoted phrase alone
+    for phrase in (normalise(q) for q in quoted):
+        if not phrase:
+            continue
+        for pid, name in seen.items():
+            if phrase in normalise(name):
+                print(f"[info] quote-phrase match: {name} ({pid})", file=sys.stderr)
+                return pid
+
+    # Fall back to best token overlap
     tset = set(target.split())
     best, score = None, 0
     for pid, name in seen.items():
@@ -108,7 +155,7 @@ def find_product_id(cfg, product_title):
         return best
 
     print(f"[warn] couldn't confidently match '{product_title}' "
-          f"to a catalogue item; posting untagged", file=sys.stderr)
+          f"(best overlap {score}); posting untagged", file=sys.stderr)
     return None
 
 
