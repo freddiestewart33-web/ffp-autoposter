@@ -18,18 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Debug list files
-        run: find . -maxdepth 5 -not -path '*/.git/*' | sort
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r "$(find . -maxdepth 5 -name requirements.txt | head -1)"
+        run: pip install -r ffp-autoposter/requirements.txt
 
       - name: Generate test scenes
-        working-directory: ffp-autoposter/ffp-autoposter
+        working-directory: ffp-autoposter
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -39,7 +36,7 @@ jobs:
       - name: Copy results to docs for viewing
         run: |
           mkdir -p docs/test-images
-          cp ffp-autoposter/ffp-autoposter/creatives/*.jpg docs/test-images/ 2>/dev/null || echo "no images generated"
+          cp ffp-autoposter/creatives/*.jpg docs/test-images/ 2>/dev/null || echo "no images generated"
           ls -la docs/test-images/
 
       - name: Commit test images
