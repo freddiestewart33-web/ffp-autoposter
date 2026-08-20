@@ -18,12 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Debug list files
+        run: find . -maxdepth 5 -not -path '*/.git/*' | sort
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r ffp-autoposter/ffp-autoposter/requirements.txt
+        run: pip install -r "$(find . -maxdepth 5 -name requirements.txt | head -1)"
 
       - name: Generate test scenes
         working-directory: ffp-autoposter/ffp-autoposter
