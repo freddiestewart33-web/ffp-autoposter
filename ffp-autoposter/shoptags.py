@@ -163,11 +163,21 @@ def find_product_id(cfg, product_title):
     return None
 
 
-def tags_payload(product_id):
-    """product_tags value for a media container. Empty if no product."""
+def tags_payload(product_id, x=0.5, y=0.5):
+    """product_tags value for a media container. Empty if no product.
+
+    IMAGE posts require an x/y position for each tag — Instagram rejects the
+    container with 'Missing product tag positions for media' otherwise. Both
+    are fractions of the image (0.0-1.0) from the top-left corner, so the
+    default 0.5/0.5 places the tag dead centre.
+    """
     if not product_id:
         return None
-    return json.dumps([{"product_id": str(product_id)}])
+    return json.dumps([{
+        "product_id": str(product_id),
+        "x": round(float(x), 4),
+        "y": round(float(y), 4),
+    }])
 
 
 def main():
