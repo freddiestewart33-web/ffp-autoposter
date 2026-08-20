@@ -1,0 +1,48 @@
+name: Test Scene Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      poster_url:
+        description: 'Poster image URL to test'
+        required: false
+        default: 'https://cdn.shopify.com/s/files/1/1019/7322/9832/files/Untitled_design.jpg?v=1772037727'
+      handle:
+        description: 'Product handle label'
+        required: false
+        default: 'scarface-test'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r ffp-autoposter/requirements.txt
+
+      - name: Generate test scenes
+        working-directory: ffp-autoposter/ffp-autoposter
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          python3 sceneshop.py --poster "${{ github.event.inputs.poster_url }}" --handle "${{ github.event.inputs.handle }}"
+
+      - name: Copy results to docs for viewing
+        run: |
+          mkdir -p docs/test-images
+          cp ffp-autoposter/ffp-autoposter/creatives/*.jpg docs/test-images/ 2>/dev/null || echo "no images generated"
+          ls -la docs/test-images/
+
+      - name: Commit test images
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add docs/test-images
+          git diff --cached --quiet || git commit -m "Test scene generation output"
+          git push
