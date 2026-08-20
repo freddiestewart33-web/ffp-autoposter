@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Final Frame Prints auto-poster."""
+"""Final Frame Prints auto-poster.
+
+Posts a creative (image at a public URL + caption) to Instagram, Facebook,
+Pinterest, and TikTok. Platforms with placeholder credentials are skipped.
+
+Usage:
+  python3 poster.py --image-url https://.../poster.jpg --caption "..." \
+      [--platforms instagram,facebook] [--dry-run]
+"""
 import argparse
 import json
 import sys
@@ -31,7 +39,12 @@ def _wait_for_container(container_id, token):
 
 
 def post_instagram(cfg, image_urls, caption, dry_run=False, product_tags=None):
-    """Publishes a single image OR a swipeable carousel (2+ images) to Instagram."""
+    """Publishes a single image OR a swipeable carousel (2+ images) to Instagram.
+
+    `product_tags` is a JSON string from shoptags.tags_payload(); when present the
+    post becomes shoppable. Tagging failures never block the post — Instagram
+    rejects the container outright if a tag is invalid, so we retry untagged.
+    """
     token = cfg["meta"]["system_user_token"]
     ig_id = cfg["meta"]["ig_business_account_id"]
     if "PASTE" in token or "PASTE" in ig_id:
@@ -44,6 +57,7 @@ def post_instagram(cfg, image_urls, caption, dry_run=False, product_tags=None):
                 f"would post {len(image_urls)} image(s){tagged}: {image_urls}")
 
     if len(image_urls) == 1:
+        tag_applied = False
         for tags in ([product_tags, None] if product_tags else [None]):
             data = {"image_url": image_urls[0], "caption": caption,
                     "access_token": token}
@@ -52,9 +66,10 @@ def post_instagram(cfg, image_urls, caption, dry_run=False, product_tags=None):
             r = requests.post(f"{GRAPH}/{ig_id}/media", data=data, timeout=60)
             if r.status_code != 200 and tags:
                 print(f"[warn] tagged container rejected, retrying untagged: "
-                      f"{r.text[:200]}", file=sys.stderr)
+                      f"{r.text[:300]}", file=sys.stderr)
                 continue
             r.raise_for_status()
+            tag_applied = bool(tags)
             break
         container_id = r.json()["id"]
         err = _wait_for_container(container_id, token)
@@ -63,10 +78,12 @@ def post_instagram(cfg, image_urls, caption, dry_run=False, product_tags=None):
         r = requests.post(f"{GRAPH}/{ig_id}/media_publish", data={
             "creation_id": container_id, "access_token": token}, timeout=60)
         r.raise_for_status()
-        status = "posted (tagged)" if product_tags else "posted"
+        status = "posted (tagged)" if tag_applied else "posted (untagged)"
         return ("instagram", status, r.json().get("id", ""))
 
+    # Carousel: create each child item (no caption on children), then a parent container
     child_ids = []
+    tag_applied = False
     for url in image_urls:
         for tags in ([product_tags, None] if product_tags else [None]):
             data = {"image_url": url, "is_carousel_item": "true",
@@ -76,9 +93,11 @@ def post_instagram(cfg, image_urls, caption, dry_run=False, product_tags=None):
             r = requests.post(f"{GRAPH}/{ig_id}/media", data=data, timeout=60)
             if r.status_code != 200 and tags:
                 print(f"[warn] tagged child rejected, retrying untagged: "
-                      f"{r.text[:200]}", file=sys.stderr)
+                      f"{r.text[:300]}", file=sys.stderr)
                 continue
             r.raise_for_status()
+            if tags:
+                tag_applied = True
             break
         child_id = r.json()["id"]
         err = _wait_for_container(child_id, token)
@@ -101,7 +120,8 @@ def post_instagram(cfg, image_urls, caption, dry_run=False, product_tags=None):
     r = requests.post(f"{GRAPH}/{ig_id}/media_publish", data={
         "creation_id": carousel_id, "access_token": token}, timeout=60)
     r.raise_for_status()
-    status = "posted (carousel, tagged)" if product_tags else "posted (carousel)"
+    status = ("posted (carousel, tagged)" if tag_applied
+              else "posted (carousel, untagged)")
     return ("instagram", status, r.json().get("id", ""))
 
 
@@ -114,8 +134,9 @@ def post_facebook(cfg, image_urls, caption, dry_run=False):
     if isinstance(image_urls, str):
         image_urls = [image_urls]
     if dry_run:
-        return ("facebook", "dry-run", f"would post {len(image_urls)} image(s)")
+        return ("facebook", "dry-run", f"would post {len(image_urls)} image(s): {image_urls}")
 
+    # Exchange system-user token for the Page token
     r = requests.get(f"{GRAPH}/{page_id}", params={
         "fields": "access_token", "access_token": token}, timeout=30)
     r.raise_for_status()
@@ -127,6 +148,7 @@ def post_facebook(cfg, image_urls, caption, dry_run=False):
         r.raise_for_status()
         return ("facebook", "posted", r.json().get("post_id", r.json().get("id", "")))
 
+    # Multi-photo: upload each unpublished, then attach them all to one feed post
     media_fbids = []
     for url in image_urls:
         r = requests.post(f"{GRAPH}/{page_id}/photos", data={
@@ -173,6 +195,7 @@ def post_tiktok(cfg, image_urls, caption, dry_run=False):
     if dry_run:
         return ("tiktok", "dry-run", f"would post {len(image_urls)} image(s)")
 
+    # Photo post via Content Posting API (PULL_FROM_URL) — supports multiple photos as a slideshow
     r = requests.post(
         "https://open.tiktokapis.com/v2/post/publish/content/init/",
         headers={"Authorization": f"Bearer {token}",
@@ -200,7 +223,7 @@ PLATFORMS = {
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image-url", help="Single image URL")
-    ap.add_argument("--image-urls", help="Comma-separated image URLs")
+    ap.add_argument("--image-urls", help="Comma-separated image URLs for a carousel/album/slideshow post")
     ap.add_argument("--caption", required=True)
     ap.add_argument("--platforms", default="instagram,facebook,pinterest,tiktok")
     ap.add_argument("--dry-run", action="store_true")
@@ -224,7 +247,7 @@ def main():
             results.append(fn(cfg, image_urls, args.caption, args.dry_run))
         except requests.HTTPError as e:
             results.append((name, "error", f"{e.response.status_code}: {e.response.text[:300]}"))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             results.append((name, "error", str(e)))
 
     log_path = Path(__file__).parent / "post_log.jsonl"
