@@ -182,22 +182,35 @@ def fetch_poster(url):
     return Image.open(io.BytesIO(r.content)).convert("RGB")
 
 
-def trim_mockup(img, tol=18):
-    """Shopify images are framed mockups on plain backgrounds — crop the flat
-    border so we composite the artwork, not the backdrop."""
+def trim_mockup(img, tol=14):
+    """Crop to the actual print artwork.
+
+    Several of these designs carry their own cream/parchment margin baked
+    into the artwork, framing the photo+quote block. If we composite that
+    whole canvas and then add our own frame on top, the result is a
+    frame-within-a-frame with a slab of dead space between them. So: find
+    the artwork's own content block (the darker, busier region — text and
+    photo) using a background estimate averaged from all four corners, and
+    crop straight to that. No 40%-of-canvas bail-out — a large margin is
+    exactly the case this needs to trim, not skip.
+    """
     g = img.convert("L")
-    bg = g.getpixel((2, 2))
+    w, h = img.size
+    corners = [g.getpixel((2, 2)), g.getpixel((w - 3, 2)),
+               g.getpixel((2, h - 3)), g.getpixel((w - 3, h - 3))]
+    bg = sum(corners) / len(corners)
     mask = g.point(lambda p: 255 if abs(p - bg) > tol else 0)
     box = mask.getbbox()
     if not box:
         return img
-    w, h = img.size
-    if (box[2] - box[0]) < w * 0.4 or (box[3] - box[1]) < h * 0.4:
-        return img
+    # Small pad so we don't shave the artwork's own border line
+    pad = max(2, int(min(w, h) * 0.01))
+    box = (max(0, box[0] - pad), max(0, box[1] - pad),
+           min(w, box[2] + pad), min(h, box[3] + pad))
     return img.crop(box)
 
 
-def add_frame(poster, border=18, frame_rgb=(16, 16, 18)):
+def add_frame(poster, border=26, frame_rgb=(16, 16, 18)):
     w, h = poster.size
     out = Image.new("RGB", (w + border * 2, h + border * 2), frame_rgb)
     out.paste(poster, (border, border))
@@ -257,12 +270,20 @@ def gallery(scene, posters, collection=None):
 
 
 def detail_shot(poster):
-    """Close crop of the print — sells paper and print quality."""
+    """Close crop of the print — sells paper and print quality.
+
+    Centre-weighted with only a small jitter. A wide-open random crop can
+    land on the edge of the artwork and slice through a headline mid-word,
+    which reads as broken rather than "zoomed in for detail".
+    """
     poster = poster.convert("RGB")
     w, h = poster.size
-    cw, ch = int(w * 0.55), int(h * 0.55)
-    x = random.randint(0, max(0, w - cw))
-    y = random.randint(0, max(0, h - ch))
+    cw, ch = int(w * 0.62), int(h * 0.62)
+    jitter_x, jitter_y = int(w * 0.06), int(h * 0.06)
+    cx = w // 2 + random.randint(-jitter_x, jitter_x)
+    cy = h // 2 + random.randint(-jitter_y, jitter_y)
+    x = max(0, min(w - cw, cx - cw // 2))
+    y = max(0, min(h - ch, cy - ch // 2))
     crop = poster.crop((x, y, x + cw, y + ch)).resize(
         (CANVAS, CANVAS), Image.LANCZOS)
     crop = Image.blend(crop, Image.new("RGB", crop.size, (255, 244, 226)), 0.06)
