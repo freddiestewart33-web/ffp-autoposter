@@ -27,7 +27,7 @@ from pathlib import Path
 import catalogue
 import captioner
 import poster
-import queue as content_queue
+import content_queue
 
 HERE = Path(__file__).parent
 POST_LOG = HERE / "post_log.jsonl"
