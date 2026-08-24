@@ -1,8 +1,7 @@
 name: Daily Poster
-
 on:
   schedule:
-    # 18:00 UTC daily — good evening slot for UK audience.
+    # 06:00 UTC daily — 7am UK time (BST).
     - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
@@ -18,11 +17,9 @@ on:
         description: "Platforms to post to"
         required: false
         default: "instagram,facebook,pinterest,tiktok"
-
 concurrency:
   group: daily-poster
   cancel-in-progress: false
-
 jobs:
   post:
     runs-on: ubuntu-latest
@@ -34,7 +31,6 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r ffp-autoposter/requirements.txt
-
       - name: Build config.json from secrets
         run: |
           cat > ffp-autoposter/config.json << 'EOF'
@@ -59,7 +55,6 @@ jobs:
             }
           }
           EOF
-
       - name: Run daily post
         env:
           HANDLE: ${{ github.event.inputs.handle }}
@@ -72,7 +67,6 @@ jobs:
           [ "$DRY_RUN" = "true" ] && ARGS="$ARGS --dry-run"
           [ -n "$PLATFORMS" ] && ARGS="$ARGS --platforms $PLATFORMS"
           python3 run_daily.py $ARGS
-
       - name: Save learned data back to repo
         if: always()
         run: |
@@ -83,9 +77,10 @@ jobs:
           if [ -n "$(git status --porcelain)" ]; then
             git config user.name "ffp-bot"
             git config user.email "bot@users.noreply.github.com"
-            git add ffp-autoposter/hashtag_library.json \
-                    ffp-autoposter/post_log.jsonl \
-                    ffp-autoposter/swipe_brief.json 2>/dev/null || true
+            git add ffp-autoposter/post_log.jsonl 2>/dev/null || true
+            git add ffp-autoposter/hashtag_library.json 2>/dev/null || true
+            git add ffp-autoposter/swipe_brief.json 2>/dev/null || true
+            git add ffp-autoposter/content-queue 2>/dev/null || true
             git commit -m "bot: post log + research data" || true
             git push || true
           fi
