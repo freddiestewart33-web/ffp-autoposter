@@ -3,7 +3,7 @@ name: Daily Poster
 on:
   schedule:
     # 18:00 UTC daily — good evening slot for UK audience.
-    - cron: "0 18 * * *"
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       handle:
