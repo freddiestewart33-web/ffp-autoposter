@@ -20,6 +20,23 @@ uploaded set is skipped rather than posted with a slide missing.
 
 Images are served to the social APIs over raw.githubusercontent.com, which
 means the repo must be public and the file must be committed before the run.
+
+POSTING ORDER
+    Default order rotates collections: one Creed, one Scarface, one
+    Snowfall, then back to Creed — rather than blasting through all of one
+    collection before touching the next.
+
+    To override that order (e.g. "skip ahead to Snowfall next"), drop a
+    plain text file at `content-queue/order.txt`, one set name per line
+    (blank lines and lines starting with # are ignored):
+
+        snowfall-2
+        creed-3
+        scarface-1
+
+    Anything listed in order.txt goes first, in that order; anything not
+    listed falls back to the normal rotation after it. Delete order.txt (or
+    empty it) to go back to plain rotation.
 """
 import os
 import re
@@ -31,6 +48,7 @@ from urllib.parse import quote
 HERE = Path(__file__).parent
 QUEUE_DIR = HERE / "content-queue"
 POSTED_DIR = QUEUE_DIR / "posted"
+ORDER_FILE = QUEUE_DIR / "order.txt"
 
 RAW_BASE = ("https://raw.githubusercontent.com/freddiestewart33-web/"
             "ffp-autoposter/main/ffp-autoposter/content-queue")
@@ -66,6 +84,41 @@ SETS = {
 }
 
 NAME_RE = re.compile(r"^(?P<set>[a-z0-9]+-\d+)(?P<shot>[a-z])$", re.I)
+
+
+def _round_robin_order():
+    """[creed-1, scarface-1, snowfall-1, creed-2, scarface-2, ...] — one set
+    per collection per lap, collections in alphabetical order (which happens
+    to read Creed, Scarface, Snowfall — exactly the rotation Freddie wants).
+    """
+    by_collection = defaultdict(list)
+    for name in SETS:
+        prefix, _, num = name.rpartition("-")
+        by_collection[prefix].append((int(num), name))
+    for lst in by_collection.values():
+        lst.sort()
+    collections = [by_collection[c] for c in sorted(by_collection)]
+    max_len = max(len(c) for c in collections)
+    order = []
+    for i in range(max_len):
+        for coll in collections:
+            if i < len(coll):
+                order.append(coll[i][1])
+    return order
+
+
+ROUND_ROBIN_ORDER = _round_robin_order()
+
+
+def _posting_order():
+    """order.txt entries first (in the order written), then the normal
+    rotation for anything not explicitly listed."""
+    if ORDER_FILE.exists():
+        listed = [l.strip() for l in ORDER_FILE.read_text().splitlines()
+                  if l.strip() and not l.strip().startswith("#")]
+        rest = [s for s in ROUND_ROBIN_ORDER if s not in listed]
+        return listed + rest
+    return ROUND_ROBIN_ORDER
 
 
 def _parse(path):
@@ -114,12 +167,18 @@ def available_sets(queue_dir=QUEUE_DIR):
 def next_set(queue_dir=QUEUE_DIR):
     """The set to post now, or None if the queue is empty.
 
-    Alphabetical, so uploads go out in a predictable order rather than
-    whatever the filesystem feels like today.
+    Follows order.txt first if present, otherwise rotates collections
+    (one Creed, one Scarface, one Snowfall, repeat) rather than blasting
+    through a whole collection before touching the next.
     """
     sets = available_sets(queue_dir)
     if not sets:
         return None
+    for name in _posting_order():
+        if name in sets:
+            return name, sets[name]
+    # Anything present but not in SETS (e.g. a new collection added without
+    # updating the rotation) — fall back to alphabetical so it still posts.
     name = sorted(sets)[0]
     return name, sets[name]
 
@@ -159,8 +218,10 @@ def main():
     if not sets:
         print("Queue is empty — the generator fallback would run.")
         return
-    print(f"{len(sets)} set(s) queued:\n")
-    for name in sorted(sets):
+    order = _posting_order()
+    print(f"{len(sets)} set(s) queued (posting order"
+          f"{' — order.txt active' if ORDER_FILE.exists() else ' — default rotation'}):\n")
+    for name in sorted(sets, key=lambda n: order.index(n) if n in order else 999):
         handle = SETS.get(name, "UNMAPPED")
         slides = ", ".join(p.name for p in sets[name])
         print(f"  {name:<12} -> {handle}")
