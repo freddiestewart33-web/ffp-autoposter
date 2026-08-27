@@ -71,16 +71,28 @@ def lookups_used_this_week(lib):
 RETRYABLE = {429, 500, 502, 503, 504}
 
 
-def gemini(cfg, parts, use_search=False, temperature=0.9, attempts=5):
+def gemini(cfg, parts, use_search=False, temperature=0.9, attempts=3):
     """Single-turn Gemini call, with backoff for rate limits and outages.
 
     Free-tier quotas (429) and transient 503s are common, so every call retries
     with exponential backoff before giving up. Falls back to a secondary model
     if the primary one is exhausted.
+
+    Only ROLLING aliases (gemini-flash-latest, gemini-flash-lite-latest) are
+    used here — Google keeps these pointed at whatever flash model is
+    currently live. A pinned dated snapshot (e.g. "gemini-2.5-flash") used to
+    be in this fallback list and quietly turned into a hard 404 once Google
+    cut new API keys off from it — that's what broke two days of posts. Never
+    hardcode a dated model name here again; if you want a specific model,
+    set it in config.json's gemini.model and it'll still be tried first.
+
+    Network hiccups (timeouts, connection errors) are treated the same as a
+    retryable status code rather than being allowed to crash the run — a
+    single slow Gemini response should never take down the day's post.
     """
     key = cfg["gemini"]["api_key"]
     models = [cfg["gemini"].get("model", "gemini-flash-latest")]
-    for fallback in ("gemini-2.5-flash", "gemini-flash-lite-latest"):
+    for fallback in ("gemini-flash-latest", "gemini-flash-lite-latest"):
         if fallback not in models:
             models.append(fallback)
 
@@ -100,26 +112,42 @@ def gemini(cfg, parts, use_search=False, temperature=0.9, attempts=5):
                     f"{GEMINI_BASE}/{model}:generateContent",
                     headers={"x-goog-api-key": key,
                              "Content-Type": "application/json"},
-                    json=body, timeout=120)
-                if r.status_code in RETRYABLE:
-                    last_err = f"{r.status_code} on {model}"
-                    if attempt < attempts - 1:
-                        wait = delay
-                        # Honour Google's own retry hint when present
-                        try:
-                            for d in r.json().get("error", {}).get("details", []):
-                                if "retryDelay" in str(d):
-                                    wait = max(wait, int(
-                                        re.sub(r"\D", "", str(d.get("retryDelay", "")))
-                                        or delay))
-                        except Exception:  # noqa: BLE001
-                            pass
-                        print(f"[retry] {last_err}, waiting {wait}s "
-                              f"(attempt {attempt + 1}/{attempts})", file=sys.stderr)
-                        time.sleep(min(wait, 60))
-                        delay = min(delay * 2, 60)
-                        continue
-                    break
+                    json=body, timeout=45)
+            except requests.exceptions.RequestException as e:
+                # Timeout, ConnectionError etc. — retryable, not fatal.
+                last_err = f"{type(e).__name__} on {model}"
+                if attempt < attempts - 1:
+                    print(f"[retry] {last_err}, waiting {delay}s "
+                          f"(attempt {attempt + 1}/{attempts})", file=sys.stderr)
+                    time.sleep(min(delay, 60))
+                    delay = min(delay * 2, 60)
+                    continue
+                print(f"[warn] {model} failed ({last_err}); trying next model",
+                      file=sys.stderr)
+                break
+
+            if r.status_code in RETRYABLE:
+                last_err = f"{r.status_code} on {model}"
+                if attempt < attempts - 1:
+                    wait = delay
+                    # Honour Google's own retry hint when present
+                    try:
+                        for d in r.json().get("error", {}).get("details", []):
+                            if "retryDelay" in str(d):
+                                wait = max(wait, int(
+                                    re.sub(r"\D", "", str(d.get("retryDelay", "")))
+                                    or delay))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    print(f"[retry] {last_err}, waiting {wait}s "
+                          f"(attempt {attempt + 1}/{attempts})", file=sys.stderr)
+                    time.sleep(min(wait, 60))
+                    delay = min(delay * 2, 60)
+                    continue
+                print(f"[warn] {model} failed ({last_err}); trying next model",
+                      file=sys.stderr)
+                break
+            try:
                 r.raise_for_status()
                 data = r.json()
                 chunks = data["candidates"][0]["content"]["parts"]
@@ -127,15 +155,13 @@ def gemini(cfg, parts, use_search=False, temperature=0.9, attempts=5):
                 if text:
                     return text
                 last_err = f"empty response from {model}"
-                break
             except requests.HTTPError as e:
                 last_err = f"{e.response.status_code} on {model}: {e.response.text[:200]}"
-                break
             except (KeyError, IndexError) as e:
                 last_err = f"unparseable response from {model}: {e}"
-                break
-        print(f"[warn] {model} failed ({last_err}); trying next model",
-              file=sys.stderr)
+            print(f"[warn] {model} failed ({last_err}); trying next model",
+                  file=sys.stderr)
+            break
 
     raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
 
@@ -322,6 +348,21 @@ def decide_cta_mode():
     return "shop" if n % 2 == 0 else "engagement"
 
 
+def _fallback_caption(product, mode, shop):
+    """Used only if every Gemini model/attempt fails for this run. Plainer
+    than the AI version, but it means a bad Gemini day still results in a
+    real post instead of the whole run crashing and nothing going out."""
+    name = product or "this print"
+    if mode == "shop":
+        return (f"{name} — framed and ready to hang.\n\n"
+                f"Built for the room where the work gets done. No excuses, "
+                f"no shortcuts.\n\n"
+                f"Shop it now: {shop}")
+    return (f"{name} on the wall.\n\n"
+            f"Which one are you running with today — tag someone who needs "
+            f"this energy in their space.")
+
+
 def write_caption(cfg, image_urls, hashtags, product=None, brief_block=""):
     shop = cfg.get("brand", {}).get("shop_url", "")
     mode = decide_cta_mode()
@@ -362,7 +403,12 @@ Rules:
 - Do NOT include any hashtags — they get appended separately.
 - Output ONLY the caption text, nothing else."""})
 
-    caption = gemini(cfg, parts, temperature=1.0)
+    try:
+        caption = gemini(cfg, parts, temperature=1.0)
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] caption generation failed, using fallback template: {e}",
+              file=sys.stderr)
+        caption = _fallback_caption(product, mode, shop)
     tag_block = " ".join(f"#{t}" for t in hashtags)
     return f"{caption}\n\n{tag_block}", mode
 
