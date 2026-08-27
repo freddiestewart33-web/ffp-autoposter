@@ -38,6 +38,32 @@ def _wait_for_container(container_id, token):
     return "timed out waiting for container"
 
 
+def _post_with_transient_retry(url, data, attempts=3):
+    """POST to the Graph API, retrying when Meta flags its own error as
+    transient (`"is_transient": true`) — this is Meta explicitly saying
+    "our side had a blip, try again", most often seen when attaching a
+    product tag to a carousel child. Retrying here catches those instead of
+    immediately giving up and posting untagged."""
+    last = None
+    for attempt in range(attempts):
+        r = requests.post(url, data=data, timeout=60)
+        last = r
+        if r.status_code == 200:
+            return r
+        try:
+            transient = r.json().get("error", {}).get("is_transient")
+        except Exception:  # noqa: BLE001
+            transient = False
+        if not transient or attempt == attempts - 1:
+            return r
+        wait = 3 * (attempt + 1)
+        print(f"[retry] transient Graph API error, waiting {wait}s "
+              f"(attempt {attempt + 1}/{attempts}): {r.text[:200]}",
+              file=sys.stderr)
+        time.sleep(wait)
+    return last
+
+
 def post_instagram(cfg, image_urls, caption, dry_run=False, product_tags=None):
     """Publishes a single image OR a swipeable carousel (2+ images) to Instagram.
 
@@ -63,7 +89,7 @@ def post_instagram(cfg, image_urls, caption, dry_run=False, product_tags=None):
                     "access_token": token}
             if tags:
                 data["product_tags"] = tags
-            r = requests.post(f"{GRAPH}/{ig_id}/media", data=data, timeout=60)
+            r = _post_with_transient_retry(f"{GRAPH}/{ig_id}/media", data)
             if r.status_code != 200 and tags:
                 print(f"[warn] tagged container rejected, retrying untagged: "
                       f"{r.text[:300]}", file=sys.stderr)
@@ -90,7 +116,7 @@ def post_instagram(cfg, image_urls, caption, dry_run=False, product_tags=None):
                     "access_token": token}
             if tags:
                 data["product_tags"] = tags
-            r = requests.post(f"{GRAPH}/{ig_id}/media", data=data, timeout=60)
+            r = _post_with_transient_retry(f"{GRAPH}/{ig_id}/media", data)
             if r.status_code != 200 and tags:
                 print(f"[warn] tagged child rejected, retrying untagged: "
                       f"{r.text[:300]}", file=sys.stderr)
